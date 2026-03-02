@@ -6,7 +6,11 @@
 #include <stdbool.h>
 
 #define MAX_POINTS 10000/2
-#define DT 0.005f
+
+// Adaptive time step bounds and target arc length for precomputation.
+#define DT_MIN 0.001f
+#define DT_MAX 0.02f
+#define TARGET_ARC_LENGTH 0.1f
 // Scale the attractor values into the Q4.4 range.
 // 0.15 uses ~75% of int8_t range for Lorenz z (48 * 0.15 * 16 = 115).
 #define STORE_SCALE 0.15f
@@ -64,9 +68,14 @@ int main(void) {
         float dy = x * (rho - z) - y;
         float dz = x * y - beta * z;
 
-        x += DT * dx;
-        y += DT * dy;
-        z += DT * dz;
+        // Adaptive time step: smaller steps in fast regions, larger in slow.
+        float speed = sqrtf(dx * dx + dy * dy + dz * dz);
+        float dt = TARGET_ARC_LENGTH / (speed > 0.001f ? speed : 0.001f);
+        dt = dt < DT_MIN ? DT_MIN : (dt > DT_MAX ? DT_MAX : dt);
+
+        x += dt * dx;
+        y += dt * dy;
+        z += dt * dz;
 
         // Scale and convert to Q4.4 fixed-point.
         int8_t fx = FLOAT_TO_FIXED4_4(x * STORE_SCALE);
