@@ -1,0 +1,30 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install CEdev toolchain
+        run: |
+          curl -fsSL https://github.com/CE-Programming/toolchain/releases/download/v14.2/CEdev-Linux.tar.gz -o CEdev-Linux.tar.gz
+          tar -xzf CEdev-Linux.tar.gz
+          echo "${{ github.workspace }}/CEdev/bin" >> "$GITHUB_PATH"
+
+      - name: Build
+        run: make -j4
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OWLEYES.8xp
+          path: bin/OWLEYES.8xp
