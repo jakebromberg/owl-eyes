@@ -21,7 +21,7 @@ jobs:
           echo "${{ github.workspace }}/CEdev/bin" >> "$GITHUB_PATH"
 
       - name: Build
-        run: make -j4
+        run: make SHELL=/bin/bash -j4
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
