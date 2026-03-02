@@ -23,6 +23,10 @@
 // Display scale in Q8.8 (1.0 * 256 = 256). Controls on-screen size.
 #define DISPLAY_SCALE_Q8 256
 
+// Depth coloring: 8 palette entries for a near-to-far gradient.
+#define NUM_DEPTH_COLORS 8
+#define DEPTH_PALETTE_START 1
+
 /*
    Pack three 8-bit fixed-point (Q4.4) values into a single 24-bit int.
    We store:
@@ -105,8 +109,17 @@ int main(void) {
     // Initialize graphics with double buffering.
     gfx_Begin();
     gfx_SetDrawBuffer();
-    gfx_SetColor(255); // Set drawing color to white.
     gfx_FillScreen(0); // Clear the back buffer (black background).
+
+    // Depth palette: white (near) to dark blue (far).
+    gfx_palette[1] = gfx_RGBTo1555(255, 255, 255);
+    gfx_palette[2] = gfx_RGBTo1555(200, 220, 255);
+    gfx_palette[3] = gfx_RGBTo1555(150, 180, 255);
+    gfx_palette[4] = gfx_RGBTo1555(100, 140, 220);
+    gfx_palette[5] = gfx_RGBTo1555(70, 100, 180);
+    gfx_palette[6] = gfx_RGBTo1555(50, 70, 140);
+    gfx_palette[7] = gfx_RGBTo1555(30, 40, 100);
+    gfx_palette[8] = gfx_RGBTo1555(15, 20, 60);
 
     // Screen center offsets.
     int xOffset = GFX_LCD_WIDTH / 2;
@@ -150,6 +163,10 @@ int main(void) {
             // collapsing 4 comparisons into 2.
             if ((unsigned int)screenX < GFX_LCD_WIDTH &&
                 (unsigned int)screenY < GFX_LCD_HEIGHT) {
+                // Map zIdx [-128, 127] -> color index [0, 7].
+                // Low zRot = near = bright, high zRot = far = dim.
+                int colorIdx = ((zIdx + 128) * (NUM_DEPTH_COLORS - 1)) >> 8;
+                gfx_SetColor(DEPTH_PALETTE_START + colorIdx);
                 gfx_SetPixel(screenX, screenY);
             }
         }
