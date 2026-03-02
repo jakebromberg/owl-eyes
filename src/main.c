@@ -5,7 +5,8 @@
 #include <math.h>
 #include <stdbool.h>
 
-#define MAX_POINTS 10000/2
+// Half the trajectory; the (-x, -y, z) mirror provides the other half.
+#define MAX_POINTS 10000/4
 
 // Adaptive time step bounds and target arc length for precomputation.
 #define DT_MIN 0.001f
@@ -155,20 +156,19 @@ int main(void) {
             // Cheap Y-axis early reject: fy is unchanged by Y-axis rotation.
             if (fy > yThreshold || fy < -yThreshold) continue;
 
-            // Y-axis rotation (all 24-bit integer math).
-            int xRot = (fx * cosA + fz * sinA) >> 8;
-            int zRot = (-fx * sinA + fz * cosA) >> 8;
+            // Factor rotation products for both original and mirror.
+            int a = fx * cosA;
+            int b = fz * sinA;
+            int c = fx * sinA;
+            int d = fz * cosA;
 
-            // Perspective + display scale via LUT.
+            // Original point.
+            int xRot = (a + b) >> 8;
+            int zRot = (-c + d) >> 8;
             int zIdx = zRot < -128 ? -128 : (zRot > 127 ? 127 : zRot);
             int factor = perspLUT[zIdx + 128];
-
-            // Map to screen coordinates.
             int screenX = xOffset + ((xRot * factor) >> 8);
             int screenY = yOffset - ((fy * factor) >> 8);
-
-            // Bounds check: unsigned cast makes negatives wrap to large values,
-            // collapsing 4 comparisons into 2.
             if ((unsigned int)screenX < GFX_LCD_WIDTH &&
                 (unsigned int)screenY < GFX_LCD_HEIGHT) {
                 // Map zIdx [-128, 127] -> color index [0, 7].
@@ -176,6 +176,20 @@ int main(void) {
                 int colorIdx = ((zIdx + 128) * (NUM_DEPTH_COLORS - 1)) >> 8;
                 gfx_SetColor(DEPTH_PALETTE_START + colorIdx);
                 gfx_SetPixel(screenX, screenY);
+            }
+
+            // Mirror point (-x, -y, z).
+            int xRotM = (-a + b) >> 8;
+            int zRotM = (c + d) >> 8;
+            int zIdxM = zRotM < -128 ? -128 : (zRotM > 127 ? 127 : zRotM);
+            int factorM = perspLUT[zIdxM + 128];
+            int screenXM = xOffset + ((xRotM * factorM) >> 8);
+            int screenYM = yOffset + ((fy * factorM) >> 8);
+            if ((unsigned int)screenXM < GFX_LCD_WIDTH &&
+                (unsigned int)screenYM < GFX_LCD_HEIGHT) {
+                int colorIdxM = ((zIdxM + 128) * (NUM_DEPTH_COLORS - 1)) >> 8;
+                gfx_SetColor(DEPTH_PALETTE_START + colorIdxM);
+                gfx_SetPixel(screenXM, screenYM);
             }
         }
 
