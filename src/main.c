@@ -106,6 +106,11 @@ int main(void) {
         perspLUT[i] = (D_FX * DISPLAY_SCALE_Q8) / denom;
     }
 
+    // Maximum perspective factor occurs at zRot = -128 (closest to viewer).
+    // Any point with |fy| above this threshold is off-screen at all depths.
+    int maxFactor = perspLUT[0];
+    int yThreshold = (((GFX_LCD_HEIGHT / 2) << 8) + maxFactor - 1) / maxFactor;
+
     // Initialize graphics with double buffering.
     gfx_Begin();
     gfx_SetDrawBuffer();
@@ -146,6 +151,9 @@ int main(void) {
         for (int i = (frameCount & 1); i < numPoints; i += 2) {
             int8_t fx, fy, fz;
             unpack3(packedPoints[i], &fx, &fy, &fz);
+
+            // Cheap Y-axis early reject: fy is unchanged by Y-axis rotation.
+            if (fy > yThreshold || fy < -yThreshold) continue;
 
             // Y-axis rotation (all 24-bit integer math).
             int xRot = (fx * cosA + fz * sinA) >> 8;
