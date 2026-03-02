@@ -9,20 +9,14 @@
 #define DT 0.005f
 // Scale the attractor values into the Q4.4 range.
 #define STORE_SCALE 0.1f
-// Inverse of STORE_SCALE to recover original values.
-#define INV_STORE_SCALE (1.0f / STORE_SCALE)
 
-// Q4.4 fixed-point conversion functions.
-// Multiply by 16 to convert a float to Q4.4.
-#define FLOAT_TO_FIXED4_4(F) (int8_t)(F * 16.0f)
-int8_t float_to_fixed4_4(float f) {
-    return (int8_t)(f * 16.0f);
-}
+// Q4.4 fixed-point conversion: multiply by 16 to encode.
+#define FLOAT_TO_FIXED4_4(F) ((int8_t)((F) * 16.0f))
 
-// Divide by 16 to convert from Q4.4 back to float.
-inline float fixed4_4_to_float(int8_t f) {
-    return ((float)f) / 16.0f;
-}
+// Perspective distance in fixed-point units (= 100 / 0.625).
+#define D_FX 160
+// Display scale in Q8.8 (1.5 * 256 = 384). Controls on-screen size.
+#define DISPLAY_SCALE_Q8 384
 
 /*
    Pack three 8-bit fixed-point (Q4.4) values into a single 24-bit int.
@@ -46,100 +40,120 @@ inline void unpack3(int packed, int8_t* x, int8_t* y, int8_t* z) {
 // Global array to store the Lorenz attractor points as packed 24-bit ints.
 static int packedPoints[MAX_POINTS];
 
+// Lookup tables for trig (Q8.8) and perspective (Q8.8 with display scale folded in).
+static int sinLUT[256];
+static int cosLUT[256];
+static int perspLUT[256];
+
 int main(void) {
     int numPoints = 0;
-    
+
     // Lorenz attractor parameters.
     const float sigma = 10.0f;
     const float beta  = 8.0f / 3.0f;
     const float rho   = 28.0f;
-    
+
     // Initial conditions.
     float x = 0.1f, y = 0.0f, z = 0.0f;
-    
+
     // Precompute the Lorenz attractor points.
-    // We scale the values by STORE_SCALE before converting to Q4.4 fixed-point.
+    // We scale the values by STORE_SCALE and encode as Q4.4 fixed-point.
     for (int i = 0; i < MAX_POINTS; i++) {
         float dx = sigma * (y - x);
         float dy = x * (rho - z) - y;
         float dz = x * y - beta * z;
-        
+
         x += DT * dx;
         y += DT * dy;
         z += DT * dz;
-        
+
         // Scale and convert to Q4.4 fixed-point.
-        int8_t fx = (int8_t)(x * STORE_SCALE);
-        int8_t fy = (int8_t)(y * STORE_SCALE);
-        int8_t fz = (int8_t)(z * STORE_SCALE);
-        
+        int8_t fx = FLOAT_TO_FIXED4_4(x * STORE_SCALE);
+        int8_t fy = FLOAT_TO_FIXED4_4(y * STORE_SCALE);
+        int8_t fz = FLOAT_TO_FIXED4_4(z * STORE_SCALE);
+
         // Pack all three coordinates into one int.
         packedPoints[i] = pack3(fx, fy, fz);
         numPoints++;
     }
-    
-    // Initialize graphics for direct drawing.
+
+    // Build trig lookup tables (256 entries, Q8.8 format).
+    for (int i = 0; i < 256; i++) {
+        float rad = (float)i * (2.0f * 3.14159265f / 256.0f);
+        sinLUT[i] = (int)(sinf(rad) * 256.0f);
+        cosLUT[i] = (int)(cosf(rad) * 256.0f);
+    }
+
+    // Build perspective lookup table: maps zRot to (D_FX * DISPLAY_SCALE_Q8) / (D_FX + zRot).
+    // Index i corresponds to zRot = i - 128.
+    for (int i = 0; i < 256; i++) {
+        int denom = D_FX + (i - 128);
+        if (denom < 1) denom = 1;
+        perspLUT[i] = (D_FX * DISPLAY_SCALE_Q8) / denom;
+    }
+
+    // Initialize graphics with double buffering.
     gfx_Begin();
-    gfx_SetDrawScreen();
+    gfx_SetDrawBuffer();
     gfx_SetColor(255); // Set drawing color to white.
-    gfx_FillScreen(0); // Clear the screen (black background).
-    
-    // Screen mapping parameters.
+    gfx_FillScreen(0); // Clear the back buffer (black background).
+
+    // Screen center offsets.
     int xOffset = GFX_LCD_WIDTH / 2;
     int yOffset = GFX_LCD_HEIGHT / 2;
-    float scaleX = 4.0f;
-    float scaleY = 4.0f;
-    
-    // Rotation and perspective parameters.
-    float angle = 0.0f;      // Starting rotation angle.
-    float rotSpeed = 0.05f;  // Rotation speed (radians per frame).
-    float d = 100.0f;        // Perspective distance.
-    
-    // Animation loop: redraw all stored points with the current rotation.
+
+    // Rotation state: uint8_t index into 256-entry LUT.
+    // Step of 2 per frame ~ 0.049 rad/frame, matching original 0.05.
+    // Wraps naturally via uint8_t overflow.
+    uint8_t angle_idx = 0;
+    uint8_t angle_step = 2;
+
+    uint8_t frameCount = 0;
+
+    // Animation loop: redraw stored points with the current rotation.
     while (true) {
-        gfx_FillScreen(0);  // Clear the screen.
-        
-        const float cosTheta = cosf(angle);
-        const float sinTheta = sinf(angle);
-        
-        // Process each stored point.
-        for (int i = 0; i < numPoints; i++) {
+        gfx_FillScreen(0);  // Clear the back buffer.
+
+        int cosA = cosLUT[angle_idx];
+        int sinA = sinLUT[angle_idx];
+
+        // Temporal dithering: draw even-indexed points on even frames,
+        // odd-indexed on odd frames. Halves per-frame work; LCD persistence
+        // makes alternating frames appear continuous.
+        for (int i = (frameCount & 1); i < numPoints; i += 2) {
             int8_t fx, fy, fz;
             unpack3(packedPoints[i], &fx, &fy, &fz);
-            
-            // Convert fixed-point values back to float and recover original scale.
-            float orig_x = (((float)fx) / 16.0f) * INV_STORE_SCALE;
-            float orig_y = (((float)fy) / 16.0f) * INV_STORE_SCALE;
-            float orig_z = (((float)fz) / 16.0f) * INV_STORE_SCALE;
-            
-            // Rotate the point around the y-axis.
-            float xRot = orig_x * cosTheta + orig_z * sinTheta;
-            float zRot = -orig_x * sinTheta + orig_z * cosTheta;
-            float yVal = orig_y;  // y remains unchanged.
-            
-            // Apply a simple perspective projection.
-            float factor = d / (d + zRot);
-            
-            // Map the 3D point to 2D screen coordinates.
-            int screenX = xOffset + (int)(xRot * factor * scaleX);
-            int screenY = yOffset - (int)(yVal * factor * scaleY);
-            
-            // Draw the pixel if it's within screen bounds.
-            if (screenX >= 0 && screenX < GFX_LCD_WIDTH &&
-                screenY >= 0 && screenY < GFX_LCD_HEIGHT) {
+
+            // Y-axis rotation (all 24-bit integer math).
+            int xRot = (fx * cosA + fz * sinA) >> 8;
+            int zRot = (-fx * sinA + fz * cosA) >> 8;
+
+            // Perspective + display scale via LUT.
+            int zIdx = zRot < -128 ? -128 : (zRot > 127 ? 127 : zRot);
+            int factor = perspLUT[zIdx + 128];
+
+            // Map to screen coordinates.
+            int screenX = xOffset + ((xRot * factor) >> 8);
+            int screenY = yOffset - ((fy * factor) >> 8);
+
+            // Bounds check: unsigned cast makes negatives wrap to large values,
+            // collapsing 4 comparisons into 2.
+            if ((unsigned int)screenX < GFX_LCD_WIDTH &&
+                (unsigned int)screenY < GFX_LCD_HEIGHT) {
                 gfx_SetPixel(screenX, screenY);
             }
         }
-        
-        gfx_SwapDraw();  // Display the frame.
-        angle += rotSpeed;  // Update the rotation angle.
-        
+
+        gfx_SwapDraw();          // Present the frame.
+        angle_idx += angle_step; // Advance rotation (wraps naturally).
+        frameCount++;            // Advance frame counter (wraps naturally).
+
         kb_Scan();
         if (kb_Data[6] & kb_Clear) {  // Exit on [CLEAR].
             break;
         }
     }
-    
+
     gfx_End();
     return 0;
 }
