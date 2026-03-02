@@ -8,15 +8,16 @@
 #define MAX_POINTS 10000/2
 #define DT 0.005f
 // Scale the attractor values into the Q4.4 range.
-#define STORE_SCALE 0.1f
+// 0.15 uses ~75% of int8_t range for Lorenz z (48 * 0.15 * 16 = 115).
+#define STORE_SCALE 0.15f
 
 // Q4.4 fixed-point conversion: multiply by 16 to encode.
 #define FLOAT_TO_FIXED4_4(F) ((int8_t)((F) * 16.0f))
 
-// Perspective distance in fixed-point units (= 100 / 0.625).
-#define D_FX 160
-// Display scale in Q8.8 (1.5 * 256 = 384). Controls on-screen size.
-#define DISPLAY_SCALE_Q8 384
+// Perspective distance in fixed-point units (= 100 * STORE_SCALE * 16).
+#define D_FX 240
+// Display scale in Q8.8 (1.0 * 256 = 256). Controls on-screen size.
+#define DISPLAY_SCALE_Q8 256
 
 /*
    Pack three 8-bit fixed-point (Q4.4) values into a single 24-bit int.
