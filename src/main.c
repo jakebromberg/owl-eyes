@@ -50,6 +50,43 @@ inline void unpack3(int packed, int8_t* x, int8_t* y, int8_t* z) {
 // Global array to store the Lorenz attractor points as packed 24-bit ints.
 static int packedPoints[MAX_POINTS];
 
+// Per-point render body: Y-axis early reject, factored rotation for original
+// + mirror (-x, -y, z), depth coloring. Uses outer-scope cosA, sinA,
+// perspLUT, xOffset, yOffset, yThreshold, and graphx globals.
+#define PROCESS_POINT(idx) do { \
+    int8_t fx_, fy_, fz_; \
+    unpack3(packedPoints[(idx)], &fx_, &fy_, &fz_); \
+    if (fy_ > yThreshold || fy_ < -yThreshold) break; \
+    int a_ = fx_ * cosA; \
+    int b_ = fz_ * sinA; \
+    int c_ = fx_ * sinA; \
+    int d_ = fz_ * cosA; \
+    int xRot_ = (a_ + b_) >> 8; \
+    int zRot_ = (-c_ + d_) >> 8; \
+    int zIdx_ = zRot_ < -128 ? -128 : (zRot_ > 127 ? 127 : zRot_); \
+    int factor_ = perspLUT[zIdx_ + 128]; \
+    int screenX_ = xOffset + ((xRot_ * factor_) >> 8); \
+    int screenY_ = yOffset - ((fy_ * factor_) >> 8); \
+    if ((unsigned int)screenX_ < GFX_LCD_WIDTH && \
+        (unsigned int)screenY_ < GFX_LCD_HEIGHT) { \
+        int colorIdx_ = ((zIdx_ + 128) * (NUM_DEPTH_COLORS - 1)) >> 8; \
+        gfx_SetColor(DEPTH_PALETTE_START + colorIdx_); \
+        gfx_SetPixel(screenX_, screenY_); \
+    } \
+    int xRotM_ = (-a_ + b_) >> 8; \
+    int zRotM_ = (c_ + d_) >> 8; \
+    int zIdxM_ = zRotM_ < -128 ? -128 : (zRotM_ > 127 ? 127 : zRotM_); \
+    int factorM_ = perspLUT[zIdxM_ + 128]; \
+    int screenXM_ = xOffset + ((xRotM_ * factorM_) >> 8); \
+    int screenYM_ = yOffset + ((fy_ * factorM_) >> 8); \
+    if ((unsigned int)screenXM_ < GFX_LCD_WIDTH && \
+        (unsigned int)screenYM_ < GFX_LCD_HEIGHT) { \
+        int colorIdxM_ = ((zIdxM_ + 128) * (NUM_DEPTH_COLORS - 1)) >> 8; \
+        gfx_SetColor(DEPTH_PALETTE_START + colorIdxM_); \
+        gfx_SetPixel(screenXM_, screenYM_); \
+    } \
+} while (0)
+
 // Lookup tables for trig (Q8.8) and perspective (Q8.8 with display scale folded in).
 static int sinLUT[256];
 static int cosLUT[256];
@@ -149,48 +186,18 @@ int main(void) {
         // Temporal dithering: draw even-indexed points on even frames,
         // odd-indexed on odd frames. Halves per-frame work; LCD persistence
         // makes alternating frames appear continuous.
-        for (int i = (frameCount & 1); i < numPoints; i += 2) {
-            int8_t fx, fy, fz;
-            unpack3(packedPoints[i], &fx, &fy, &fz);
-
-            // Cheap Y-axis early reject: fy is unchanged by Y-axis rotation.
-            if (fy > yThreshold || fy < -yThreshold) continue;
-
-            // Factor rotation products for both original and mirror.
-            int a = fx * cosA;
-            int b = fz * sinA;
-            int c = fx * sinA;
-            int d = fz * cosA;
-
-            // Original point.
-            int xRot = (a + b) >> 8;
-            int zRot = (-c + d) >> 8;
-            int zIdx = zRot < -128 ? -128 : (zRot > 127 ? 127 : zRot);
-            int factor = perspLUT[zIdx + 128];
-            int screenX = xOffset + ((xRot * factor) >> 8);
-            int screenY = yOffset - ((fy * factor) >> 8);
-            if ((unsigned int)screenX < GFX_LCD_WIDTH &&
-                (unsigned int)screenY < GFX_LCD_HEIGHT) {
-                // Map zIdx [-128, 127] -> color index [0, 7].
-                // Low zRot = near = bright, high zRot = far = dim.
-                int colorIdx = ((zIdx + 128) * (NUM_DEPTH_COLORS - 1)) >> 8;
-                gfx_SetColor(DEPTH_PALETTE_START + colorIdx);
-                gfx_SetPixel(screenX, screenY);
-            }
-
-            // Mirror point (-x, -y, z).
-            int xRotM = (-a + b) >> 8;
-            int zRotM = (c + d) >> 8;
-            int zIdxM = zRotM < -128 ? -128 : (zRotM > 127 ? 127 : zRotM);
-            int factorM = perspLUT[zIdxM + 128];
-            int screenXM = xOffset + ((xRotM * factorM) >> 8);
-            int screenYM = yOffset + ((fy * factorM) >> 8);
-            if ((unsigned int)screenXM < GFX_LCD_WIDTH &&
-                (unsigned int)screenYM < GFX_LCD_HEIGHT) {
-                int colorIdxM = ((zIdxM + 128) * (NUM_DEPTH_COLORS - 1)) >> 8;
-                gfx_SetColor(DEPTH_PALETTE_START + colorIdxM);
-                gfx_SetPixel(screenXM, screenYM);
-            }
+        // Unrolled 4x to reduce branch overhead on the eZ80.
+        int start = frameCount & 1;
+        int unrollLimit = numPoints - 7;
+        int i = start;
+        for (; i <= unrollLimit; i += 8) {
+            PROCESS_POINT(i);
+            PROCESS_POINT(i + 2);
+            PROCESS_POINT(i + 4);
+            PROCESS_POINT(i + 6);
+        }
+        for (; i < numPoints; i += 2) {
+            PROCESS_POINT(i);
         }
 
         gfx_SwapDraw();          // Present the frame.
